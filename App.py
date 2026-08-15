@@ -1,11 +1,12 @@
-import time
 import os
+import re
 import tempfile
 import requests
 import streamlit as st
 
-from google import genai
-from google.genai import types
+from PIL import Image, ImageDraw, ImageFont
+from gtts import gTTS
+from moviepy import ImageClip, AudioFileClip, concatenate_videoclips
 
 
 # =========================================================
@@ -15,8 +16,7 @@ from google.genai import types
 st.set_page_config(
     page_title="Nexa Video AI",
     page_icon="🎬",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    layout="wide"
 )
 
 
@@ -25,64 +25,57 @@ st.set_page_config(
 # =========================================================
 
 FIREBASE_API_KEY = st.secrets.get(
-    "FIREBASE_API_KEY",
-    ""
+    "FIREBASE_API_KEY", ""
 )
 
 GEMINI_API_KEY = st.secrets.get(
-    "GEMINI_API_KEY",
-    ""
+    "GEMINI_API_KEY", ""
 )
 
 
 # =========================================================
-# SETTINGS
+# API
 # =========================================================
-
-GEMINI_MODEL = "gemini-3.6-flash"
-
-VEO_MODEL = "veo-3.1-fast-generate-preview"
 
 FIREBASE_URL = (
     "https://identitytoolkit.googleapis.com/v1/accounts"
 )
 
-GEMINI_INTERACTION_URL = (
+GEMINI_URL = (
     "https://generativelanguage.googleapis.com/"
     "v1beta/interactions"
 )
 
+GEMINI_MODEL = "gemini-3.6-flash"
+
 
 # =========================================================
-# SESSION STATE
+# SESSION
 # =========================================================
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-if "user_email" not in st.session_state:
-    st.session_state.user_email = ""
+if "email" not in st.session_state:
+    st.session_state.email = ""
 
-if "id_token" not in st.session_state:
-    st.session_state.id_token = ""
+if "token" not in st.session_state:
+    st.session_state.token = ""
 
-if "generated_script" not in st.session_state:
-    st.session_state.generated_script = ""
+if "script" not in st.session_state:
+    st.session_state.script = ""
 
-if "video_path" not in st.session_state:
-    st.session_state.video_path = ""
-
-if "videos_today" not in st.session_state:
-    st.session_state.videos_today = 0
+if "video" not in st.session_state:
+    st.session_state.video = None
 
 
 # =========================================================
-# SAFETY FILTER
+# SAFETY
 # =========================================================
 
-def is_unsafe_content(text):
+def unsafe(text):
 
-    blocked_terms = [
+    blocked = [
         "porn",
         "pornography",
         "xxx",
@@ -90,16 +83,12 @@ def is_unsafe_content(text):
         "nudity",
         "nsfw",
         "erotic",
-        "sexual content",
-        "sexual video",
-        "sex video",
         "adult video",
         "adult content",
-        "explicit sex",
+        "sex video",
+        "sexual content",
         "sexually explicit",
-        "sexual intercourse",
-        "18+ video",
-        "18 plus video",
+        "explicit sex",
         "onlyfans",
 
         "బూతు",
@@ -109,48 +98,19 @@ def is_unsafe_content(text):
 
         "अश्लील",
         "नग्न",
-        "सेक्स वीडियो",
-
-        "ஆபாச",
-        "நிர்வாண",
-        "செக்ஸ் வீடியோ"
+        "सेक्स वीडियो"
     ]
 
     text = text.lower()
 
-    for term in blocked_terms:
-        if term in text:
-            return True
-
-    return False
-
-
-# =========================================================
-# FIREBASE SIGNUP
-# =========================================================
-
-def firebase_signup(email, password):
-
-    url = (
-        f"{FIREBASE_URL}:signUp"
-        f"?key={FIREBASE_API_KEY}"
+    return any(
+        word in text
+        for word in blocked
     )
 
-    response = requests.post(
-        url,
-        json={
-            "email": email,
-            "password": password,
-            "returnSecureToken": True
-        },
-        timeout=30
-    )
-
-    return response.json()
-
 
 # =========================================================
-# FIREBASE LOGIN
+# FIREBASE
 # =========================================================
 
 def firebase_login(email, password):
@@ -160,7 +120,7 @@ def firebase_login(email, password):
         f"?key={FIREBASE_API_KEY}"
     )
 
-    response = requests.post(
+    r = requests.post(
         url,
         json={
             "email": email,
@@ -170,17 +130,79 @@ def firebase_login(email, password):
         timeout=30
     )
 
-    return response.json()
+    return r.json()
+
+
+def firebase_signup(email, password):
+
+    url = (
+        f"{FIREBASE_URL}:signUp"
+        f"?key={FIREBASE_API_KEY}"
+    )
+
+    r = requests.post(
+        url,
+        json={
+            "email": email,
+            "password": password,
+            "returnSecureToken": True
+        },
+        timeout=30
+    )
+
+    return r.json()
 
 
 # =========================================================
-# GEMINI SCRIPT GENERATION
+# GEMINI
 # =========================================================
 
-def generate_script(prompt):
+def generate_script(topic, language, duration, style):
 
     if not GEMINI_API_KEY:
         return None, "GEMINI_API_KEY is missing."
+
+    prompt = f"""
+You are Nexa Video AI.
+
+Create a safe, engaging video script.
+
+Topic:
+{topic}
+
+Language:
+{language}
+
+Target duration:
+{duration}
+
+Style:
+{style}
+
+Create 10 scenes.
+
+For every scene give:
+
+SCENE 1
+Duration:
+Visual:
+Narration:
+On-screen text:
+
+SCENE 2
+Duration:
+Visual:
+Narration:
+On-screen text:
+
+Continue until SCENE 10.
+
+Make the narration suitable for a general audience.
+
+Do not create pornography, sexual content,
+adult content, erotic content, NSFW content,
+or sexualized nudity.
+"""
 
     headers = {
         "x-goog-api-key": GEMINI_API_KEY,
@@ -194,35 +216,36 @@ def generate_script(prompt):
 
     try:
 
-        response = requests.post(
-            GEMINI_INTERACTION_URL,
+        r = requests.post(
+            GEMINI_URL,
             headers=headers,
             json=payload,
             timeout=180
         )
 
-        data = response.json()
+        data = r.json()
 
-        if response.status_code >= 400:
+        if r.status_code >= 400:
 
-            return None, (
-                f"Gemini API error "
-                f"{response.status_code}: "
-                f"{data}"
-            )
+            return None, str(data)
 
-        output_text = data.get(
+        text = data.get(
             "output_text"
         )
 
-        if output_text:
-            return output_text, None
+        if text:
+            return text, None
 
-        collected = []
+        parts = []
 
-        for step in data.get("steps", []):
+        for step in data.get(
+            "steps",
+            []
+        ):
 
-            if step.get("type") != "model_output":
+            if step.get(
+                "type"
+            ) != "model_output":
                 continue
 
             for content in step.get(
@@ -230,22 +253,23 @@ def generate_script(prompt):
                 []
             ):
 
-                if content.get("type") == "text":
+                if content.get(
+                    "type"
+                ) == "text":
 
-                    text = content.get(
+                    value = content.get(
                         "text",
                         ""
                     )
 
-                    if text:
-                        collected.append(text)
+                    if value:
+                        parts.append(value)
 
-        if collected:
-            return "\n".join(collected), None
+        if parts:
+            return "\n".join(parts), None
 
         return None, (
-            "Gemini responded but no text "
-            "was found."
+            "No text returned by Gemini."
         )
 
     except Exception as e:
@@ -254,193 +278,342 @@ def generate_script(prompt):
 
 
 # =========================================================
-# VEO VIDEO GENERATION
+# PARSE SCENES
 # =========================================================
 
-def generate_veo_video(
-    prompt,
-    aspect_ratio="9:16"
+def parse_scenes(script):
+
+    pattern = re.compile(
+        r"SCENE\s+\d+"
+        r"(.*?)(?=SCENE\s+\d+|$)",
+        re.IGNORECASE |
+        re.DOTALL
+    )
+
+    matches = pattern.findall(
+        script
+    )
+
+    scenes = []
+
+    for match in matches:
+
+        text = match.strip()
+
+        if text:
+            scenes.append(text)
+
+    return scenes
+
+
+# =========================================================
+# CREATE IMAGE
+# =========================================================
+
+def create_scene_image(
+    text,
+    number,
+    width=720,
+    height=1280
 ):
 
-    if not GEMINI_API_KEY:
+    image = Image.new(
+        "RGB",
+        (width, height),
+        "black"
+    )
 
-        return None, (
-            "GEMINI_API_KEY is missing."
-        )
+    draw = ImageDraw.Draw(
+        image
+    )
 
     try:
 
-        client = genai.Client(
-            api_key=GEMINI_API_KEY
+        font = ImageFont.truetype(
+            "DejaVuSans.ttf",
+            38
         )
 
-        st.info(
-            "🎬 Starting Veo video generation..."
+        small_font = ImageFont.truetype(
+            "DejaVuSans.ttf",
+            28
         )
 
-        operation = client.models.generate_videos(
-            model=VEO_MODEL,
-            prompt=prompt,
-            config=types.GenerateVideosConfig(
-                aspect_ratio=aspect_ratio,
-                resolution="720p",
-                number_of_videos=1
-            )
-        )
+    except:
 
-        progress = st.progress(0)
+        font = ImageFont.load_default()
+        small_font = font
 
-        status = st.empty()
+    title = f"SCENE {number}"
 
-        start_time = time.time()
+    draw.text(
+        (40, 50),
+        title,
+        fill="white",
+        font=font
+    )
 
-        while not operation.done:
+    # Wrap text
 
-            elapsed = int(
-                time.time() - start_time
-            )
+    words = text.split()
 
-            status.write(
-                f"🎬 Generating video... "
-                f"{elapsed}s elapsed"
-            )
+    lines = []
+    current = ""
 
-            progress.progress(
-                min(
-                    0.95,
-                    0.05 + elapsed / 180
-                )
-            )
+    for word in words:
 
-            time.sleep(10)
+        test = (
+            current + " " + word
+        ).strip()
 
-            operation = client.operations.get(
-                operation
+        if len(test) > 32:
+
+            lines.append(
+                current
             )
 
-        progress.progress(1.0)
+            current = word
 
-        status.write(
-            "✅ Video generation completed!"
+        else:
+
+            current = test
+
+    if current:
+        lines.append(
+            current
         )
 
-        if not operation.response:
+    y = 180
 
-            return None, (
-                "Veo returned no response."
-            )
+    for line in lines:
 
-        generated_videos = (
-            operation.response.generated_videos
+        draw.text(
+            (40, y),
+            line,
+            fill="white",
+            font=small_font
         )
 
-        if not generated_videos:
+        y += 50
 
-            return None, (
-                "Veo returned no generated video."
-            )
+        if y > height - 100:
+            break
 
-        generated_video = (
-            generated_videos[0]
-        )
+    path = os.path.join(
+        tempfile.gettempdir(),
+        f"nexa_scene_{number}.png"
+    )
 
-        client.files.download(
-            file=generated_video.video
-        )
+    image.save(path)
 
-        output_path = os.path.join(
-            tempfile.gettempdir(),
-            "nexa_video.mp4"
-        )
-
-        generated_video.video.save(
-            output_path
-        )
-
-        if not os.path.exists(
-            output_path
-        ):
-
-            return None, (
-                "Video file was not saved."
-            )
-
-        return output_path, None
-
-    except Exception as e:
-
-        return None, (
-            f"Veo error: {e}"
-        )
+    return path
 
 
 # =========================================================
-# LOGIN / SIGNUP SCREEN
+# TEXT TO SPEECH
+# =========================================================
+
+def create_voice(
+    text,
+    language
+):
+
+    language_codes = {
+
+        "English": "en",
+        "Telugu": "te",
+        "Hindi": "hi",
+        "Tamil": "ta",
+        "Malayalam": "ml",
+        "Kannada": "kn",
+        "Bengali": "bn",
+        "Marathi": "mr",
+        "Gujarati": "gu",
+        "Punjabi": "pa",
+        "Urdu": "ur"
+    }
+
+    code = language_codes.get(
+        language,
+        "en"
+    )
+
+    path = os.path.join(
+        tempfile.gettempdir(),
+        "nexa_voice.mp3"
+    )
+
+    try:
+
+        tts = gTTS(
+            text=text,
+            lang=code
+        )
+
+        tts.save(path)
+
+        return path, None
+
+    except Exception as e:
+
+        return None, str(e)
+
+
+# =========================================================
+# CREATE VIDEO
+# =========================================================
+
+def create_video(
+    script,
+    language,
+    progress_bar
+):
+
+    scenes = parse_scenes(
+        script
+    )
+
+    if not scenes:
+
+        return None, (
+            "Could not find scenes "
+            "in the generated script."
+        )
+
+    # Limit first prototype
+    scenes = scenes[:10]
+
+    clips = []
+
+    total = len(scenes)
+
+    for index, scene in enumerate(
+        scenes,
+        start=1
+    ):
+
+        progress_bar.progress(
+            int(
+                ((index - 1) / total) * 90
+            )
+        )
+
+        image_path = (
+            create_scene_image(
+                scene,
+                index
+            )
+        )
+
+        # Use scene text as narration.
+        voice_path, error = (
+            create_voice(
+                scene,
+                language
+            )
+        )
+
+        if error:
+            return None, error
+
+        audio = AudioFileClip(
+            voice_path
+        )
+
+        duration = max(
+            audio.duration,
+            2
+        )
+
+        clip = (
+            ImageClip(image_path)
+            .with_duration(duration)
+            .with_audio(audio)
+        )
+
+        clips.append(clip)
+
+    progress_bar.progress(95)
+
+    final = concatenate_videoclips(
+        clips,
+        method="compose"
+    )
+
+    output = os.path.join(
+        tempfile.gettempdir(),
+        "nexa_video.mp4"
+    )
+
+    final.write_videofile(
+        output,
+        fps=24,
+        codec="libx264",
+        audio_codec="aac",
+        logger=None
+    )
+
+    final.close()
+
+    progress_bar.progress(100)
+
+    return output, None
+
+
+# =========================================================
+# LOGIN SCREEN
 # =========================================================
 
 if not st.session_state.logged_in:
 
-    st.markdown(
-        """
-        <div style="text-align:center">
-
-        <h1>🎬 Nexa Video AI</h1>
-
-        <p style="font-size:20px">
-        Turn your ideas into AI videos
-        </p>
-
-        </div>
-        """,
-        unsafe_allow_html=True
+    st.title(
+        "🎬 Nexa Video AI"
     )
 
-    st.divider()
+    st.write(
+        "Turn your ideas into videos."
+    )
 
-    login_tab, signup_tab = st.tabs(
+    login, signup = st.tabs(
         [
             "🔑 Login",
             "📝 Sign Up"
         ]
     )
 
-    # =====================================================
+    # -----------------------------------------------------
     # LOGIN
-    # =====================================================
+    # -----------------------------------------------------
 
-    with login_tab:
-
-        st.subheader(
-            "Welcome Back"
-        )
+    with login:
 
         email = st.text_input(
-            "📧 Email",
+            "Email",
             key="login_email"
         )
 
         password = st.text_input(
-            "🔒 Password",
+            "Password",
             type="password",
             key="login_password"
         )
 
         if st.button(
-            "🔑 Login",
+            "Login",
             type="primary",
             use_container_width=True
         ):
 
-            if not FIREBASE_API_KEY:
-
-                st.error(
-                    "Firebase API key is missing."
-                )
-
-            elif not email or not password:
+            if not email or not password:
 
                 st.warning(
                     "Enter email and password."
+                )
+
+            elif not FIREBASE_API_KEY:
+
+                st.error(
+                    "Firebase API key missing."
                 )
 
             else:
@@ -454,14 +627,14 @@ if not st.session_state.logged_in:
 
                     st.session_state.logged_in = True
 
-                    st.session_state.user_email = (
+                    st.session_state.email = (
                         result.get(
                             "email",
                             email
                         )
                     )
 
-                    st.session_state.id_token = (
+                    st.session_state.token = (
                         result["idToken"]
                     )
 
@@ -469,59 +642,46 @@ if not st.session_state.logged_in:
 
                 else:
 
-                    error = (
-                        result
-                        .get("error", {})
-                        .get(
+                    st.error(
+                        result.get(
+                            "error",
+                            {}
+                        ).get(
                             "message",
                             "Login failed."
                         )
                     )
 
-                    st.error(
-                        f"Login failed: {error}"
-                    )
-
-    # =====================================================
+    # -----------------------------------------------------
     # SIGNUP
-    # =====================================================
+    # -----------------------------------------------------
 
-    with signup_tab:
-
-        st.subheader(
-            "Create Your Account"
-        )
+    with signup:
 
         email = st.text_input(
-            "📧 Email",
+            "Email",
             key="signup_email"
         )
 
         password = st.text_input(
-            "🔒 Password",
+            "Password",
             type="password",
             key="signup_password"
         )
 
         confirm = st.text_input(
-            "🔒 Confirm Password",
+            "Confirm Password",
             type="password",
             key="signup_confirm"
         )
 
         if st.button(
-            "📝 Create Account",
+            "Create Account",
             type="primary",
             use_container_width=True
         ):
 
-            if not FIREBASE_API_KEY:
-
-                st.error(
-                    "Firebase API key is missing."
-                )
-
-            elif not email or not password:
+            if not email or not password:
 
                 st.warning(
                     "Enter email and password."
@@ -530,14 +690,13 @@ if not st.session_state.logged_in:
             elif password != confirm:
 
                 st.error(
-                    "Passwords do not match."
+                    "Passwords don't match."
                 )
 
             elif len(password) < 6:
 
                 st.error(
-                    "Password must contain "
-                    "at least 6 characters."
+                    "Password must be at least 6 characters."
                 )
 
             else:
@@ -551,14 +710,14 @@ if not st.session_state.logged_in:
 
                     st.session_state.logged_in = True
 
-                    st.session_state.user_email = (
+                    st.session_state.email = (
                         result.get(
                             "email",
                             email
                         )
                     )
 
-                    st.session_state.id_token = (
+                    st.session_state.token = (
                         result["idToken"]
                     )
 
@@ -566,24 +725,15 @@ if not st.session_state.logged_in:
 
                 else:
 
-                    error = (
-                        result
-                        .get("error", {})
-                        .get(
+                    st.error(
+                        result.get(
+                            "error",
+                            {}
+                        ).get(
                             "message",
                             "Signup failed."
                         )
                     )
-
-                    st.error(
-                        f"Signup failed: {error}"
-                    )
-
-    st.divider()
-
-    st.caption(
-        "🔐 Secure authentication powered by Firebase"
-    )
 
     st.stop()
 
@@ -597,44 +747,22 @@ st.sidebar.title(
 )
 
 st.sidebar.write(
-    f"👤 {st.session_state.user_email}"
-)
-
-st.sidebar.divider()
-
-st.sidebar.subheader(
-    "💎 Premium"
-)
-
-st.sidebar.write(
-    "₹10 / month"
-)
-
-st.sidebar.write(
-    "🎬 Up to 2 videos per day"
-)
-
-st.sidebar.write(
-    f"Today: {st.session_state.videos_today}/2"
+    f"👤 {st.session_state.email}"
 )
 
 if st.sidebar.button(
-    "🚪 Logout",
-    use_container_width=True
+    "🚪 Logout"
 ):
 
     st.session_state.logged_in = False
-    st.session_state.user_email = ""
-    st.session_state.id_token = ""
-    st.session_state.generated_script = ""
-    st.session_state.video_path = ""
-    st.session_state.videos_today = 0
+    st.session_state.email = ""
+    st.session_state.token = ""
 
     st.rerun()
 
 
 # =========================================================
-# MAIN HEADER
+# MAIN
 # =========================================================
 
 st.title(
@@ -642,33 +770,25 @@ st.title(
 )
 
 st.write(
-    "Create AI-powered videos from text."
+    "Create a video from your text idea."
 )
 
 st.divider()
 
 
 # =========================================================
-# VIDEO IDEA
+# INPUT
 # =========================================================
 
-st.subheader(
-    "✍️ Video Idea"
-)
-
-idea = st.text_area(
-    "Enter your video idea",
-    height=160,
+topic = st.text_area(
+    "✍️ What video do you want?",
+    height=150,
     placeholder=(
-        "Example: A student who fails many times "
-        "but finally achieves his dream."
+        "Example: A student works hard "
+        "and finally achieves his dream."
     )
 )
 
-
-# =========================================================
-# SETTINGS
-# =========================================================
 
 col1, col2 = st.columns(2)
 
@@ -694,61 +814,33 @@ with col1:
 with col2:
 
     duration = st.selectbox(
-        "⏱️ Target Duration",
+        "⏱️ Video length",
         [
-            "5 minutes",
-            "6 minutes",
-            "8 minutes",
-            "10 minutes"
-        ]
-    )
-
-
-col3, col4 = st.columns(2)
-
-with col3:
-
-    voice = st.selectbox(
-        "🎙️ Voice",
-        [
-            "Male",
-            "Female"
-        ]
-    )
-
-with col4:
-
-    aspect_ratio = st.selectbox(
-        "📱 Format",
-        [
-            "9:16",
-            "16:9"
+            "Short test",
+            "5 minutes"
         ]
     )
 
 
 style = st.selectbox(
-    "🎨 Visual Style",
+    "🎨 Style",
     [
         "Cinematic",
-        "Realistic",
-        "Documentary",
         "Educational",
         "Motivational",
-        "Storytelling",
-        "Animation"
+        "Documentary",
+        "Storytelling"
     ]
 )
 
 
 # =========================================================
-# SAFETY NOTICE
+# SAFETY
 # =========================================================
 
 st.info(
-    "🛡️ Nexa does not support pornography, "
-    "adult sexual content, explicit sexual content, "
-    "or NSFW video generation."
+    "🛡️ Adult, pornographic, sexually explicit "
+    "and NSFW videos are not supported."
 )
 
 
@@ -757,18 +849,18 @@ st.info(
 # =========================================================
 
 if st.button(
-    "📝 Generate AI Script",
+    "🧠 Generate Script",
     type="primary",
     use_container_width=True
 ):
 
-    if not idea.strip():
+    if not topic.strip():
 
         st.warning(
-            "Please enter a video idea."
+            "Enter a video idea first."
         )
 
-    elif is_unsafe_content(idea):
+    elif unsafe(topic):
 
         st.error(
             "🚫 This content is not supported."
@@ -776,104 +868,52 @@ if st.button(
 
     else:
 
-        prompt = f"""
-You are Nexa Video AI.
-
-Create a production-ready video script.
-
-Topic:
-{idea}
-
-Language:
-{language}
-
-Target duration:
-{duration}
-
-Voice:
-{voice}
-
-Visual style:
-{style}
-
-Aspect ratio:
-{aspect_ratio}
-
-Create 10 detailed scenes.
-
-For each scene include:
-
-1. Scene number
-2. Approximate duration
-3. Visual description
-4. Video-generation prompt
-5. Narration
-6. On-screen text
-7. Camera movement
-8. Audio/music suggestion
-
-The final video should feel cinematic,
-professional and engaging.
-
-Use the requested language for narration.
-
-Safety:
-Do not create pornography, adult sexual content,
-explicit sexual content, erotic content, NSFW content,
-or sexualized nudity.
-"""
-
         with st.spinner(
-            "🧠 Gemini is writing your script..."
+            "Gemini is creating your script..."
         ):
 
             script, error = generate_script(
-                prompt
+                topic,
+                language,
+                duration,
+                style
             )
 
         if error:
 
-            st.error(
-                error
-            )
+            st.error(error)
 
-        elif script:
+        else:
 
-            st.session_state.generated_script = script
+            st.session_state.script = script
 
             st.success(
                 "✅ Script generated!"
             )
 
-        else:
-
-            st.error(
-                "No script was returned."
-            )
-
 
 # =========================================================
-# DISPLAY SCRIPT
+# SCRIPT
 # =========================================================
 
-if st.session_state.generated_script:
+if st.session_state.script:
 
     st.divider()
 
     st.subheader(
-        "📝 Generated Script"
+        "📝 Your Script"
     )
 
     st.text_area(
-        "Script",
-        st.session_state.generated_script,
+        "Generated Script",
+        st.session_state.script,
         height=500
     )
 
     st.download_button(
         "⬇️ Download Script",
-        data=st.session_state.generated_script,
-        file_name="nexa_video_script.txt",
+        data=st.session_state.script,
+        file_name="nexa_script.txt",
         mime="text/plain",
         use_container_width=True
     )
@@ -881,98 +921,63 @@ if st.session_state.generated_script:
     st.divider()
 
     st.subheader(
-        "🎬 Create Video"
+        "🎬 Create MP4"
     )
 
     st.write(
-        "Veo will create a cinematic video scene "
-        "from your generated script."
+        "This free prototype creates scene cards "
+        "with multilingual narration and combines "
+        "them into an MP4."
     )
 
     if st.button(
-        "🎬 Generate Video",
+        "🎥 Create Video",
         type="primary",
         use_container_width=True
     ):
 
-        if st.session_state.videos_today >= 2:
-
-            st.error(
-                "⛔ Daily video limit reached."
-            )
-
-        elif is_unsafe_content(
-            st.session_state.generated_script
+        if unsafe(
+            st.session_state.script
         ):
 
             st.error(
-                "🚫 This script cannot be converted "
-                "into a video."
+                "🚫 Unsafe content detected."
             )
 
         else:
 
-            video_prompt = f"""
-Create a cinematic video based on this script:
-
-{st.session_state.generated_script}
-
-Language:
-{language}
-
-Visual style:
-{style}
-
-Aspect ratio:
-{aspect_ratio}
-
-Create natural cinematic motion,
-professional camera movement,
-realistic lighting and appropriate
-background audio.
-
-The content must be safe for a general audience.
-
-Do not include pornography, adult sexual content,
-explicit sexual content, erotic content,
-NSFW content, or sexualized nudity.
-"""
+            progress = st.progress(0)
 
             with st.spinner(
-                "🎬 Veo is generating your video..."
+                "🎬 Creating your video..."
             ):
 
-                video_path, error = (
-                    generate_veo_video(
-                        video_prompt,
-                        aspect_ratio
-                    )
+                video, error = create_video(
+                    st.session_state.script,
+                    language,
+                    progress
                 )
 
             if error:
 
                 st.error(
-                    error
+                    f"Video creation failed: {error}"
                 )
 
-            elif video_path:
+            else:
 
-                st.session_state.video_path = (
-                    video_path
-                )
-
-                st.session_state.videos_today += 1
+                st.session_state.video = video
 
                 st.success(
-                    "🎉 Video generated successfully!"
+                    "🎉 Video created successfully!"
                 )
 
 
 # =========================================================
-# VIDEO PLAYER + DOWNLOAD
+# VIDEO OUTPUT
 # =========================================================
 
-if st.session_state.video_path:
+if st.session_state.video:
 
     st.divider()
 
@@ -981,31 +986,23 @@ if st.session_state.video_path:
     )
 
     st.video(
-        st.session_state.video_path
+        st.session_state.video
     )
 
-    try:
+    with open(
+        st.session_state.video,
+        "rb"
+    ) as file:
 
-        with open(
-            st.session_state.video_path,
-            "rb"
-        ) as video_file:
+        video_data = file.read()
 
-            video_data = video_file.read()
-
-        st.download_button(
-            "⬇️ Download MP4",
-            data=video_data,
-            file_name="nexa_video.mp4",
-            mime="video/mp4",
-       use_container_width=True
-        )
-
-    except Exception as e:
-
-        st.error(
-            f"Could not prepare download: {e}"
-        )
+    st.download_button(
+        "⬇️ Download MP4",
+        data=video_data,
+        file_name="nexa_video.mp4",
+        mime="video/mp4",
+        use_container_width=True
+    )
 
 
 # =========================================================
@@ -1018,37 +1015,23 @@ st.subheader(
     "💎 Nexa Premium"
 )
 
-left, right = st.columns(2)
-
-with left:
-
-    st.markdown(
-        """
+st.markdown(
+    """
 ### ₹10 / month
 
-- 🎬 Up to 2 videos per day
-- ⏱️ 5+ minute target videos
+- 🎬 Video creation
 - 🌐 Multiple languages
-- 🎙️ AI narration
-- 🎨 Cinematic AI visuals
 - 📝 AI scripts
-- 🎵 Generated audio
+- 🎙️ AI narration
 - ⬇️ MP4 download
 - 🛡️ Safe content generation
 """
-    )
+)
 
-with right:
-
-    st.info(
-        "Google Play Billing will be connected "
-        "before publishing the app."
-    )
-
-    st.button(
-        "💳 Upgrade to Premium",
-        use_container_width=True
-    )
+st.info(
+    "Google Play subscription will be connected "
+    "after the core video pipeline is working."
+)
 
 
 # =========================================================
@@ -1059,8 +1042,4 @@ st.divider()
 
 st.caption(
     "🎬 Nexa Video AI • Turn Words Into Videos"
-)
-
-st.caption(
-    "🔐 Firebase • 🤖 Gemini • 🎥 Veo"
-            )
+    )
