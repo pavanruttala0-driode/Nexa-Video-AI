@@ -1,5 +1,7 @@
+    import os
+import requests
 import streamlit as st
-import os
+from google import genai
 
 # =========================================================
 # PAGE CONFIGURATION
@@ -13,71 +15,487 @@ st.set_page_config(
 )
 
 # =========================================================
-# CUSTOM CSS
+# CONFIGURATION
 # =========================================================
 
-st.markdown(
-    """
-    <style>
-    .main-title {
-        font-size: 48px;
-        font-weight: 800;
-        text-align: center;
-        margin-bottom: 5px;
-    }
+FIREBASE_API_KEY = st.secrets.get(
+    "FIREBASE_API_KEY",
+    ""
+)
 
-    .subtitle {
-        text-align: center;
-        font-size: 20px;
-        opacity: 0.75;
-        margin-bottom: 30px;
-    }
+GEMINI_API_KEY = st.secrets.get(
+    "GEMINI_API_KEY",
+    ""
+)
 
-    .feature-card {
-        padding: 20px;
-        border-radius: 15px;
-        border: 1px solid rgba(128,128,128,0.25);
-        margin-bottom: 15px;
-    }
-
-    .premium-card {
-        padding: 25px;
-        border-radius: 18px;
-        border: 2px solid rgba(255, 180, 0, 0.5);
-        text-align: center;
-        margin-top: 20px;
-    }
-
-    .center {
-        text-align: center;
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True
+FIREBASE_AUTH_URL = (
+    "https://identitytoolkit.googleapis.com/v1/accounts"
 )
 
 # =========================================================
-# HEADER
+# GEMINI CLIENT
 # =========================================================
 
-st.markdown(
-    '<div class="main-title">🎬 Nexa Video AI</div>',
-    unsafe_allow_html=True
+gemini_client = None
+
+if GEMINI_API_KEY:
+
+    try:
+        gemini_client = genai.Client(
+            api_key=GEMINI_API_KEY
+        )
+
+    except Exception:
+
+        gemini_client = None
+
+
+# =========================================================
+# CONTENT SAFETY FILTER
+# =========================================================
+
+def is_unsafe_content(text):
+
+    blocked_terms = [
+
+        # English
+        "porn",
+        "pornography",
+        "xxx",
+        "nude",
+        "nudity",
+        "explicit sex",
+        "sexual content",
+        "sexual video",
+        "sex video",
+        "adult video",
+        "adult content",
+        "erotic",
+        "sexually explicit",
+        "sexual intercourse",
+
+        # Common indirect requests
+        "18+ video",
+        "18 plus video",
+        "nsfw",
+        "onlyfans",
+
+        # Telugu
+        "బూతు",
+        "నగ్న",
+        "అశ్లీల",
+        "సెక్స్ వీడియో",
+
+        # Hindi
+        "अश्लील",
+        "नग्न",
+        "सेक्स वीडियो",
+
+        # Tamil
+        "ஆபாச",
+        "நிர்வாண",
+        "செக்ஸ் வீடியோ"
+    ]
+
+    text_lower = text.lower()
+
+    for term in blocked_terms:
+
+        if term in text_lower:
+            return True
+
+    return False
+
+
+# =========================================================
+# FIREBASE SIGNUP
+# =========================================================
+
+def firebase_signup(email, password):
+
+    url = (
+        f"{FIREBASE_AUTH_URL}:signUp"
+        f"?key={FIREBASE_API_KEY}"
+    )
+
+    response = requests.post(
+        url,
+        json={
+            "email": email,
+            "password": password,
+            "returnSecureToken": True
+        },
+        timeout=30
+    )
+
+    return response.json()
+
+
+# =========================================================
+# FIREBASE LOGIN
+# =========================================================
+
+def firebase_login(email, password):
+
+    url = (
+        f"{FIREBASE_AUTH_URL}:signInWithPassword"
+        f"?key={FIREBASE_API_KEY}"
+    )
+
+    response = requests.post(
+        url,
+        json={
+            "email": email,
+            "password": password,
+            "returnSecureToken": True
+        },
+        timeout=30
+    )
+
+    return response.json()
+
+
+# =========================================================
+# SESSION STATE
+# =========================================================
+
+if "logged_in" not in st.session_state:
+
+    st.session_state.logged_in = False
+
+
+if "user_email" not in st.session_state:
+
+    st.session_state.user_email = ""
+
+
+if "id_token" not in st.session_state:
+
+    st.session_state.id_token = ""
+
+
+if "generated_script" not in st.session_state:
+
+    st.session_state.generated_script = ""
+
+
+# =========================================================
+# LOGIN / SIGNUP SCREEN
+# =========================================================
+
+if not st.session_state.logged_in:
+
+    st.markdown(
+        """
+        <div style="text-align:center;">
+
+        <h1>🎬 Nexa Video AI</h1>
+
+        <p style="font-size:20px;">
+        Turn your words into AI-powered videos
+        </p>
+
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.divider()
+
+    login_tab, signup_tab = st.tabs(
+        [
+            "🔑 Login",
+            "📝 Create Account"
+        ]
+    )
+
+    # =====================================================
+    # LOGIN
+    # =====================================================
+
+    with login_tab:
+
+        st.subheader("Welcome Back")
+
+        login_email = st.text_input(
+            "📧 Email",
+            key="login_email"
+        )
+
+        login_password = st.text_input(
+            "🔒 Password",
+            type="password",
+            key="login_password"
+        )
+
+        if st.button(
+            "🔑 Login",
+            use_container_width=True,
+            type="primary"
+        ):
+
+            if not FIREBASE_API_KEY:
+
+                st.error(
+                    "Firebase API key is not configured."
+                )
+
+            elif not login_email:
+
+                st.warning(
+                    "Please enter your email."
+                )
+
+            elif not login_password:
+
+                st.warning(
+                    "Please enter your password."
+                )
+
+            else:
+
+                try:
+
+                    result = firebase_login(
+                        login_email,
+                        login_password
+                    )
+
+                    if "idToken" in result:
+
+                        st.session_state.logged_in = True
+
+                        st.session_state.user_email = (
+                            result.get(
+                                "email",
+                                login_email
+                            )
+                        )
+
+                        st.session_state.id_token = (
+                            result["idToken"]
+                        )
+
+                        st.success(
+                            "✅ Login successful!"
+                        )
+
+                        st.rerun()
+
+                    else:
+
+                        error_message = (
+                            result.get(
+                                "error",
+                                {}
+                            ).get(
+                                "message",
+                                "Login failed."
+                            )
+                        )
+
+                        st.error(
+                            f"❌ Login failed: "
+                            f"{error_message}"
+                        )
+
+                except Exception as e:
+
+                    st.error(
+                        f"Connection error: {e}"
+                    )
+
+    # =====================================================
+    # SIGNUP
+    # =====================================================
+
+    with signup_tab:
+
+        st.subheader(
+            "Create Your Nexa Account"
+        )
+
+        signup_email = st.text_input(
+            "📧 Email",
+            key="signup_email"
+        )
+
+        signup_password = st.text_input(
+            "🔒 Password",
+            type="password",
+            key="signup_password"
+        )
+
+        confirm_password = st.text_input(
+            "🔒 Confirm Password",
+            type="password",
+            key="confirm_password"
+        )
+
+        if st.button(
+            "📝 Create Account",
+            use_container_width=True,
+            type="primary"
+        ):
+
+            if not FIREBASE_API_KEY:
+
+                st.error(
+                    "Firebase API key is not configured."
+                )
+
+            elif not signup_email:
+
+                st.warning(
+                    "Please enter your email."
+                )
+
+            elif not signup_password:
+
+                st.warning(
+                    "Please enter a password."
+                )
+
+            elif signup_password != confirm_password:
+
+                st.error(
+                    "❌ Passwords do not match."
+                )
+
+            elif len(signup_password) < 6:
+
+                st.error(
+                    "❌ Password must contain at least "
+                    "6 characters."
+                )
+
+            else:
+
+                try:
+
+                    result = firebase_signup(
+                        signup_email,
+                        signup_password
+                    )
+
+                    if "idToken" in result:
+
+                        st.session_state.logged_in = True
+
+                        st.session_state.user_email = (
+                            result.get(
+                                "email",
+                                signup_email
+                            )
+                        )
+
+                        st.session_state.id_token = (
+                            result["idToken"]
+                        )
+
+                        st.success(
+                            "✅ Account created!"
+                        )
+
+                        st.rerun()
+
+                    else:
+
+                        error_message = (
+                            result.get(
+                                "error",
+                                {}
+                            ).get(
+                                "message",
+                                "Signup failed."
+                            )
+                        )
+
+                        st.error(
+                            f"❌ Signup failed: "
+                            f"{error_message}"
+                        )
+
+                except Exception as e:
+
+                    st.error(
+                        f"Connection error: {e}"
+                    )
+
+    st.divider()
+
+    st.caption(
+        "🔐 Account authentication is handled by Firebase."
+    )
+
+    st.stop()
+
+
+# =========================================================
+# SIDEBAR
+# =========================================================
+
+st.sidebar.title(
+    "🎬 Nexa Video AI"
 )
 
-st.markdown(
-    '<div class="subtitle">Turn your words into amazing AI-powered videos</div>',
-    unsafe_allow_html=True
+st.sidebar.write(
+    f"👤 {st.session_state.user_email}"
+)
+
+st.sidebar.divider()
+
+st.sidebar.subheader(
+    "💎 Premium"
+)
+
+st.sidebar.write(
+    "₹10 / month"
+)
+
+st.sidebar.write(
+    "🎬 Maximum 2 videos per day"
+)
+
+if st.sidebar.button(
+    "🚪 Logout",
+    use_container_width=True
+):
+
+    st.session_state.logged_in = False
+
+    st.session_state.user_email = ""
+
+    st.session_state.id_token = ""
+
+    st.session_state.generated_script = ""
+
+    st.rerun()
+
+
+# =========================================================
+# MAIN HEADER
+# =========================================================
+
+st.title(
+    "🎬 Nexa Video AI"
+)
+
+st.write(
+    "Create multilingual AI-powered videos "
+    "from your ideas."
 )
 
 st.divider()
 
+
 # =========================================================
-# VIDEO INPUT
+# VIDEO IDEA
 # =========================================================
 
-st.subheader("✍️ Create Your Video")
+st.subheader(
+    "✍️ Create Your Video"
+)
 
 text = st.text_area(
     "Enter your video idea or script",
@@ -89,8 +507,9 @@ text = st.text_area(
     )
 )
 
+
 # =========================================================
-# VIDEO SETTINGS
+# LANGUAGE + DURATION
 # =========================================================
 
 col1, col2 = st.columns(2)
@@ -126,6 +545,11 @@ with col2:
         ]
     )
 
+
+# =========================================================
+# VOICE + FORMAT
+# =========================================================
+
 col3, col4 = st.columns(2)
 
 with col3:
@@ -149,6 +573,7 @@ with col4:
         ]
     )
 
+
 # =========================================================
 # VIDEO STYLE
 # =========================================================
@@ -158,17 +583,18 @@ style = st.selectbox(
     [
         "Cinematic",
         "Realistic",
-        "Cartoon",
-        "Anime",
         "Educational",
         "Documentary",
         "Motivational",
-        "Storytelling"
+        "Storytelling",
+        "Cartoon",
+        "Anime"
     ]
 )
 
+
 # =========================================================
-# MUSIC
+# BACKGROUND MUSIC
 # =========================================================
 
 music = st.selectbox(
@@ -183,108 +609,241 @@ music = st.selectbox(
     ]
 )
 
+
+# =========================================================
+# SAFETY NOTICE
+# =========================================================
+
+st.info(
+    "🛡️ Nexa Video AI does not support adult, "
+    "pornographic, sexually explicit, or NSFW videos."
+)
+
+
+# =========================================================
+# GENERATE SCRIPT
+# =========================================================
+
 st.divider()
 
-# =========================================================
-# GENERATE VIDEO
-# =========================================================
-
 if st.button(
-    "🚀 Generate Video",
+    "🚀 Generate AI Script",
     use_container_width=True,
     type="primary"
 ):
 
+    # -----------------------------------------------------
+    # EMPTY INPUT
+    # -----------------------------------------------------
+
     if not text.strip():
 
         st.warning(
-            "⚠️ Please enter your video idea or script first."
+            "⚠️ Please enter your video idea first."
         )
+
+    # -----------------------------------------------------
+    # SAFETY CHECK
+    # -----------------------------------------------------
+
+    elif is_unsafe_content(text):
+
+        st.error(
+            "🚫 This type of content is not supported "
+            "by Nexa Video AI.\n\n"
+            "Please enter a safe topic such as education, "
+            "stories, motivation, travel, technology, "
+            "history, or entertainment."
+        )
+
+    # -----------------------------------------------------
+    # GEMINI CHECK
+    # -----------------------------------------------------
+
+    elif gemini_client is None:
+
+        st.error(
+            "🤖 Gemini API is not configured.\n\n"
+            "Please add GEMINI_API_KEY to "
+            "Streamlit Secrets."
+        )
+
+    # -----------------------------------------------------
+    # GENERATION
+    # -----------------------------------------------------
 
     else:
 
-        st.success(
-            "✅ Video generation request created!"
-        )
+        prompt = f"""
+You are the safe AI scriptwriter for Nexa Video AI.
 
-        st.session_state["video_requested"] = True
-        st.session_state["video_text"] = text
-        st.session_state["video_language"] = language
-        st.session_state["video_duration"] = duration
+IMPORTANT SAFETY RULES:
+
+Do not create adult, pornographic, sexually explicit,
+NSFW, or sexualized content.
+
+Do not create sexual content involving minors.
+
+If the user's request asks for prohibited sexual content,
+do not generate it.
+
+Instead, return exactly:
+
+"CONTENT_NOT_SUPPORTED"
+
+USER VIDEO IDEA:
+
+{text}
+
+LANGUAGE:
+
+{language}
+
+TARGET DURATION:
+
+{duration}
+
+VOICE:
+
+{voice}
+
+VIDEO STYLE:
+
+{style}
+
+ASPECT RATIO:
+
+{aspect_ratio}
+
+BACKGROUND MUSIC:
+
+{music}
+
+Create a production-ready video script.
+
+Divide the video into scenes.
+
+For every scene provide:
+
+1. Scene number
+2. Narration
+3. Visual description
+4. Suggested duration
+5. On-screen text
+6. Background music suggestion
+
+Make the narration natural and suitable for the selected
+language.
+
+The final result will later be used to create an AI video.
+
+Keep the content suitable for a general audience.
+"""
+
+        try:
+
+            with st.spinner(
+                "🧠 Gemini is creating your safe AI script..."
+            ):
+
+                response = (
+                    gemini_client
+                    .models
+                    .generate_content(
+                        model="gemini-2.5-flash",
+                        contents=prompt
+                    )
+                )
+
+            generated_text = response.text.strip()
+
+            # ------------------------------------------------
+            # SECOND SAFETY CHECK
+            # ------------------------------------------------
+
+            if (
+                generated_text
+                == "CONTENT_NOT_SUPPORTED"
+            ):
+
+                st.error(
+                    "🚫 This request cannot be generated "
+                    "by Nexa Video AI."
+                )
+
+                st.session_state.generated_script = ""
+
+            elif is_unsafe_content(
+                generated_text
+            ):
+
+                st.error(
+                    "🚫 The generated content did not "
+                    "pass Nexa Video AI safety checks."
+                )
+
+                st.session_state.generated_script = ""
+
+            else:
+
+                st.session_state.generated_script = (
+                    generated_text
+                )
+
+                st.success(
+                    "✅ Safe AI script generated!"
+                )
+
+        except Exception as e:
+
+            st.error(
+                f"Gemini API error: {e}"
+            )
+
 
 # =========================================================
-# VIDEO GENERATION STATUS
+# GENERATED SCRIPT
 # =========================================================
 
-if st.session_state.get("video_requested", False):
+if st.session_state.generated_script:
 
     st.divider()
 
-    st.subheader("🎬 Video Generation")
-
-    progress = st.progress(0)
-
-    status = st.empty()
-
-    status.info("Preparing your video...")
-
-    progress.progress(15)
-
-    status.info("🧠 Preparing AI script and scenes...")
-
-    progress.progress(30)
-
-    status.info("🎨 Preparing visual scenes...")
-
-    progress.progress(45)
-
-    status.info("🎙️ Preparing voice narration...")
-
-    progress.progress(60)
-
-    status.info("🎵 Preparing background music...")
-
-    progress.progress(75)
-
-    status.info(
-        "🎬 Final video will be assembled here..."
+    st.subheader(
+        "📝 Your AI Video Script"
     )
 
-    progress.progress(100)
-
-    st.success(
-        "Video pipeline ready. Real AI generation will be connected next."
+    st.text_area(
+        "Generated Script",
+        st.session_state.generated_script,
+        height=500
     )
-
-    # =====================================================
-    # VIDEO PREVIEW PLACEHOLDER
-    # =====================================================
-
-    st.subheader("▶️ Video Preview")
-
-    st.info(
-        "Your generated MP4 video will appear here after "
-        "we connect the AI video-generation backend."
-    )
-
-    # =====================================================
-    # DOWNLOAD PLACEHOLDER
-    # =====================================================
-
-    st.subheader("⬇️ Download")
 
     st.download_button(
-        label="⬇️ Download Video",
-        data=b"Nexa Video AI - Video will be generated here.",
-        file_name="nexa_video.txt",
+        label="⬇️ Download Script",
+        data=st.session_state.generated_script,
+        file_name="nexa_video_script.txt",
         mime="text/plain",
         use_container_width=True
     )
 
-    st.caption(
-        "The download button is currently a prototype. "
-        "It will download the actual MP4 after the video backend is connected."
+    st.divider()
+
+    st.subheader(
+        "🎬 Video Generation"
     )
+
+    st.info(
+        "Your script is ready. The next stage will "
+        "generate the visual scenes, voice narration, "
+        "subtitles, background music, and final MP4."
+    )
+
+    st.button(
+        "🎬 Create Video",
+        use_container_width=True
+    )
+
 
 # =========================================================
 # PREMIUM PLAN
@@ -292,75 +851,66 @@ if st.session_state.get("video_requested", False):
 
 st.divider()
 
-st.subheader("💎 Nexa Premium")
-
-st.markdown(
-    """
-    <div class="premium-card">
-
-    <h2>💎 Premium</h2>
-
-    <h1>₹10 / month</h1>
-
-    <p>✔ 5+ minute videos</p>
-    <p>✔ Multiple languages</p>
-    <p>✔ AI voice narration</p>
-    <p>✔ AI visuals</p>
-    <p>✔ Automatic subtitles</p>
-    <p>✔ Video download</p>
-
-    </div>
-    """,
-    unsafe_allow_html=True
+st.subheader(
+    "💎 Nexa Premium"
 )
 
-st.button(
-    "💳 Upgrade to Premium",
-    use_container_width=True
-)
+premium_col1, premium_col2 = st.columns(2)
+
+with premium_col1:
+
+    st.markdown(
+        """
+### 💎 ₹10 / month
+
+- 🎬 Maximum 2 videos per day
+- ⏱️ 5+ minute videos
+- 🌐 Multiple languages
+- 🎙️ AI voice narration
+- 🎨 AI visuals
+- 📝 Automatic subtitles
+- 🎵 Background music
+- ⬇️ Video download
+- 🛡️ Safe content generation
+        """
+    )
+
+with premium_col2:
+
+    st.info(
+        "Google Play Billing will be connected "
+        "when we build the Android version."
+    )
+
+    st.button(
+        "💳 Upgrade to Premium",
+        use_container_width=True
+    )
+
 
 # =========================================================
-# FEATURES
+# SAFETY POLICY
 # =========================================================
 
 st.divider()
 
-st.subheader("✨ Features")
+st.subheader(
+    "🛡️ Content Policy"
+)
 
-f1, f2, f3 = st.columns(3)
+st.write(
+    """
+Nexa Video AI is designed for general-audience content.
 
-with f1:
-    st.markdown(
-        """
-        <div class="feature-card">
-        <h3>🌐 Multiple Languages</h3>
-        Create videos in different languages.
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+Adult, pornographic, sexually explicit, and NSFW
+video generation is not supported.
 
-with f2:
-    st.markdown(
-        """
-        <div class="feature-card">
-        <h3>🎬 Long Videos</h3>
-        Create videos starting from 5 minutes.
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+Users should create educational, informational,
+creative, motivational, entertainment, travel,
+technology, storytelling, and other safe content.
+"""
+)
 
-with f3:
-    st.markdown(
-        """
-        <div class="feature-card">
-        <h3>⬇️ Download</h3>
-        Download your generated MP4 videos.
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
 
 # =========================================================
 # FOOTER
@@ -368,7 +918,10 @@ with f3:
 
 st.divider()
 
-st.markdown(
-    '<div class="center">🎬 Nexa Video AI • Turn Words Into Videos</div>',
-    unsafe_allow_html=True
+st.caption(
+    "🎬 Nexa Video AI • Turn Words Into Videos"
+)
+
+st.caption(
+    "🛡️ Safe AI • 🔐 Secure Accounts • 🌐 Multilingual"
 )
