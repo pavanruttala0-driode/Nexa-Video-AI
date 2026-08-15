@@ -30,35 +30,36 @@ GEMINI_API_KEY = st.secrets.get(
 
 
 # =========================================================
-# GEMINI SETTINGS
+# API SETTINGS
 # =========================================================
 
-GEMINI_INTERACTIONS_URL = (
+FIREBASE_AUTH_URL = (
+    "https://identitytoolkit.googleapis.com/v1/accounts"
+)
+
+GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/interactions"
 )
 
-PREFERRED_MODELS = [
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3-flash-preview"
-]
+GEMINI_MODEL = "gemini-3.6-flash"
 
 
 # =========================================================
 # SESSION STATE
 # =========================================================
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
+defaults = {
+    "logged_in": False,
+    "user_email": "",
+    "id_token": "",
+    "generated_script": "",
+    "videos_today": 0,
+}
 
-if "user_email" not in st.session_state:
-    st.session_state.user_email = ""
+for key, value in defaults.items():
 
-if "id_token" not in st.session_state:
-    st.session_state.id_token = ""
-
-if "generated_script" not in st.session_state:
-    st.session_state.generated_script = ""
+    if key not in st.session_state:
+        st.session_state[key] = value
 
 
 # =========================================================
@@ -73,18 +74,18 @@ def is_unsafe_content(text):
         "xxx",
         "nude",
         "nudity",
-        "explicit sex",
+        "nsfw",
+        "erotic",
         "sexual content",
         "sexual video",
         "sex video",
         "adult video",
         "adult content",
-        "erotic",
         "sexually explicit",
+        "explicit sex",
         "sexual intercourse",
         "18+ video",
         "18 plus video",
-        "nsfw",
         "onlyfans",
 
         "బూతు",
@@ -101,14 +102,12 @@ def is_unsafe_content(text):
         "செக்ஸ் வீடியோ"
     ]
 
-    text_lower = text.lower()
+    value = text.lower()
 
-    for term in blocked_terms:
-
-        if term in text_lower:
-            return True
-
-    return False
+    return any(
+        term in value
+        for term in blocked_terms
+    )
 
 
 # =========================================================
@@ -118,8 +117,8 @@ def is_unsafe_content(text):
 def firebase_signup(email, password):
 
     url = (
-        "https://identitytoolkit.googleapis.com/v1/"
-        f"accounts:signUp?key={FIREBASE_API_KEY}"
+        f"{FIREBASE_AUTH_URL}:signUp"
+        f"?key={FIREBASE_API_KEY}"
     )
 
     response = requests.post(
@@ -142,8 +141,8 @@ def firebase_signup(email, password):
 def firebase_login(email, password):
 
     url = (
-        "https://identitytoolkit.googleapis.com/v1/"
-        f"accounts:signInWithPassword?key={FIREBASE_API_KEY}"
+        f"{FIREBASE_AUTH_URL}:signInWithPassword"
+        f"?key={FIREBASE_API_KEY}"
     )
 
     response = requests.post(
@@ -160,99 +159,17 @@ def firebase_login(email, password):
 
 
 # =========================================================
-# FIND AVAILABLE GEMINI MODEL
+# GEMINI SCRIPT GENERATION
 # =========================================================
 
-def find_gemini_model():
+def generate_script(prompt):
 
     if not GEMINI_API_KEY:
-        return None, "GEMINI_API_KEY is missing."
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models"
-    )
-
-    headers = {
-        "x-goog-api-key": GEMINI_API_KEY
-    }
-
-    try:
-
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=30
-        )
-
-        data = response.json()
-
-        if response.status_code != 200:
-
-            return None, str(data)
-
-        available_models = []
-
-        for model in data.get("models", []):
-
-            name = model.get("name", "")
-
-            supported_methods = model.get(
-                "supportedGenerationMethods",
-                []
-            )
-
-            if (
-                "generateContent" in supported_methods
-                or name.startswith("models/gemini")
-            ):
-
-                clean_name = name.replace(
-                    "models/",
-                    ""
-                )
-
-                available_models.append(
-                    clean_name
-                )
-
-        for preferred in PREFERRED_MODELS:
-
-            if preferred in available_models:
-
-                return preferred, None
-
-        # Fallback: find a Flash model
-        for model in available_models:
-
-            if "flash" in model.lower():
-
-                return model, None
 
         return None, (
-            "No suitable Gemini Flash model is available "
-            "for this API key."
+            "GEMINI_API_KEY is missing. "
+            "Add it to Streamlit Secrets."
         )
-
-    except Exception as e:
-
-        return None, str(e)
-
-
-# =========================================================
-# GENERATE GEMINI SCRIPT
-# =========================================================
-
-def generate_gemini_script(prompt):
-
-    if not GEMINI_API_KEY:
-
-        return None, "GEMINI_API_KEY is not configured."
-
-    model, model_error = find_gemini_model()
-
-    if not model:
-
-        return None, model_error
 
     headers = {
         "x-goog-api-key": GEMINI_API_KEY,
@@ -260,17 +177,17 @@ def generate_gemini_script(prompt):
     }
 
     payload = {
-        "model": model,
+        "model": GEMINI_MODEL,
         "input": prompt
     }
 
     try:
 
         response = requests.post(
-            GEMINI_INTERACTIONS_URL,
+            GEMINI_URL,
             headers=headers,
             json=payload,
-            timeout=120
+            timeout=180
         )
 
         data = response.json()
@@ -278,11 +195,15 @@ def generate_gemini_script(prompt):
         if response.status_code >= 400:
 
             return None, (
-                f"Gemini API error {response.status_code}: "
+                f"Gemini API error "
+                f"{response.status_code}: "
                 f"{data}"
             )
 
-        # Current Interactions API normally returns output_text
+        # =================================================
+        # READ INTERACTIONS API OUTPUT
+        # =================================================
+
         output_text = data.get(
             "output_text"
         )
@@ -291,54 +212,49 @@ def generate_gemini_script(prompt):
 
             return output_text, None
 
-        # Backup parser
-        outputs = data.get(
-            "outputs",
+        # Backup response parser
+
+        collected = []
+
+        for step in data.get(
+            "steps",
             []
-        )
+        ):
 
-        collected_text = []
+            if step.get(
+                "type"
+            ) != "model_output":
 
-        for item in outputs:
+                continue
 
-            if isinstance(item, dict):
+            for content in step.get(
+                "content",
+                []
+            ):
 
-                text = item.get(
-                    "text"
-                )
+                if content.get(
+                    "type"
+                ) == "text":
 
-                if text:
-                    collected_text.append(text)
+                    text = content.get(
+                        "text",
+                        ""
+                    )
 
-                content = item.get(
-                    "content",
-                    []
-                )
+                    if text:
+                        collected.append(
+                            text
+                        )
 
-                if isinstance(content, list):
-
-                    for part in content:
-
-                        if isinstance(part, dict):
-
-                            part_text = part.get(
-                                "text"
-                            )
-
-                            if part_text:
-                                collected_text.append(
-                                    part_text
-                                )
-
-        if collected_text:
+        if collected:
 
             return "\n".join(
-                collected_text
+                collected
             ), None
 
         return None, (
-            "Gemini returned a response, "
-            "but no text was found."
+            "Gemini responded, but "
+            "no generated text was found."
         )
 
     except requests.exceptions.Timeout:
@@ -354,7 +270,7 @@ def generate_gemini_script(prompt):
 
 
 # =========================================================
-# LOGIN / SIGNUP
+# LOGIN PAGE
 # =========================================================
 
 if not st.session_state.logged_in:
@@ -365,8 +281,8 @@ if not st.session_state.logged_in:
 
         <h1>🎬 Nexa Video AI</h1>
 
-        <p style="font-size:20px">
-        Turn your ideas into AI-powered videos
+        <p>
+        Create AI-powered videos from your ideas
         </p>
 
         </div>
@@ -379,7 +295,7 @@ if not st.session_state.logged_in:
     login_tab, signup_tab = st.tabs(
         [
             "🔑 Login",
-            "📝 Create Account"
+            "📝 Sign Up"
         ]
     )
 
@@ -394,12 +310,12 @@ if not st.session_state.logged_in:
             "Welcome Back"
         )
 
-        login_email = st.text_input(
+        email = st.text_input(
             "📧 Email",
             key="login_email"
         )
 
-        login_password = st.text_input(
+        password = st.text_input(
             "🔒 Password",
             type="password",
             key="login_password"
@@ -407,77 +323,63 @@ if not st.session_state.logged_in:
 
         if st.button(
             "🔑 Login",
-            use_container_width=True,
-            type="primary"
+            type="primary",
+            use_container_width=True
         ):
 
             if not FIREBASE_API_KEY:
 
                 st.error(
-                    "Firebase API key is not configured."
+                    "Firebase API key is missing."
                 )
 
-            elif not login_email:
+            elif not email or not password:
 
                 st.warning(
-                    "Enter your email."
-                )
-
-            elif not login_password:
-
-                st.warning(
-                    "Enter your password."
+                    "Enter email and password."
                 )
 
             else:
 
-                try:
+                result = firebase_login(
+                    email,
+                    password
+                )
 
-                    result = firebase_login(
-                        login_email,
-                        login_password
+                if "idToken" in result:
+
+                    st.session_state.logged_in = True
+
+                    st.session_state.user_email = (
+                        result.get(
+                            "email",
+                            email
+                        )
                     )
 
-                    if "idToken" in result:
+                    st.session_state.id_token = (
+                        result["idToken"]
+                    )
 
-                        st.session_state.logged_in = True
+                    st.success(
+                        "Login successful!"
+                    )
 
-                        st.session_state.user_email = (
-                            result.get(
-                                "email",
-                                login_email
-                            )
+                    st.rerun()
+
+                else:
+
+                    error = (
+                        result
+                        .get("error", {})
+                        .get(
+                            "message",
+                            "Login failed."
                         )
-
-                        st.session_state.id_token = (
-                            result["idToken"]
-                        )
-
-                        st.success(
-                            "Login successful!"
-                        )
-
-                        st.rerun()
-
-                    else:
-
-                        error = (
-                            result
-                            .get("error", {})
-                            .get(
-                                "message",
-                                "Login failed."
-                            )
-                        )
-
-                        st.error(
-                            f"Login failed: {error}"
-                        )
-
-                except Exception as e:
+                    )
 
                     st.error(
-                        f"Connection error: {e}"
+                        f"Login failed: {error}"
                     )
 
 
@@ -488,21 +390,21 @@ if not st.session_state.logged_in:
     with signup_tab:
 
         st.subheader(
-            "Create Your Account"
+            "Create Nexa Account"
         )
 
-        signup_email = st.text_input(
+        email = st.text_input(
             "📧 Email",
             key="signup_email"
         )
 
-        signup_password = st.text_input(
+        password = st.text_input(
             "🔒 Password",
             type="password",
             key="signup_password"
         )
 
-        confirm_password = st.text_input(
+        confirm = st.text_input(
             "🔒 Confirm Password",
             type="password",
             key="confirm_password"
@@ -510,35 +412,29 @@ if not st.session_state.logged_in:
 
         if st.button(
             "📝 Create Account",
-            use_container_width=True,
-            type="primary"
+            type="primary",
+            use_container_width=True
         ):
 
             if not FIREBASE_API_KEY:
 
                 st.error(
-                    "Firebase API key is not configured."
+                    "Firebase API key is missing."
                 )
 
-            elif not signup_email:
+            elif not email or not password:
 
                 st.warning(
-                    "Enter your email."
+                    "Enter email and password."
                 )
 
-            elif not signup_password:
-
-                st.warning(
-                    "Enter a password."
-                )
-
-            elif signup_password != confirm_password:
+            elif password != confirm:
 
                 st.error(
                     "Passwords do not match."
                 )
 
-            elif len(signup_password) < 6:
+            elif len(password) < 6:
 
                 st.error(
                     "Password must be at least 6 characters."
@@ -546,60 +442,52 @@ if not st.session_state.logged_in:
 
             else:
 
-                try:
+                result = firebase_signup(
+                    email,
+                    password
+                )
 
-                    result = firebase_signup(
-                        signup_email,
-                        signup_password
+                if "idToken" in result:
+
+                    st.session_state.logged_in = True
+
+                    st.session_state.user_email = (
+                        result.get(
+                            "email",
+                            email
+                        )
                     )
 
-                    if "idToken" in result:
+                    st.session_state.id_token = (
+                        result["idToken"]
+                    )
 
-                        st.session_state.logged_in = True
+                    st.success(
+                        "Account created!"
+                    )
 
-                        st.session_state.user_email = (
-                            result.get(
-                                "email",
-                                signup_email
-                            )
+                    st.rerun()
+
+                else:
+
+                    error = (
+                        result
+                        .get("error", {})
+                        .get(
+                            "message",
+                            "Signup failed."
                         )
-
-                        st.session_state.id_token = (
-                            result["idToken"]
-                        )
-
-                        st.success(
-                            "Account created successfully!"
-                        )
-
-                        st.rerun()
-
-                    else:
-
-                        error = (
-                            result
-                            .get("error", {})
-                            .get(
-                                "message",
-                                "Signup failed."
-                            )
-                        )
-
-                        st.error(
-                            f"Signup failed: {error}"
-                        )
-
-                except Exception as e:
+                    )
 
                     st.error(
-                        f"Connection error: {e}"
+                        f"Signup failed: {error}"
                     )
 
 
     st.divider()
 
     st.caption(
-        "🔐 Secure authentication powered by Firebase"
+        "🔐 Authentication powered by Firebase"
     )
 
     st.stop()
@@ -628,7 +516,8 @@ st.sidebar.write(
 )
 
 st.sidebar.write(
-    "🎬 Up to 2 videos per day"
+    f"🎬 Videos today: "
+    f"{st.session_state.videos_today}/2"
 )
 
 if st.sidebar.button(
@@ -640,12 +529,13 @@ if st.sidebar.button(
     st.session_state.user_email = ""
     st.session_state.id_token = ""
     st.session_state.generated_script = ""
+    st.session_state.videos_today = 0
 
     st.rerun()
 
 
 # =========================================================
-# MAIN HEADER
+# MAIN APP
 # =========================================================
 
 st.title(
@@ -653,34 +543,32 @@ st.title(
 )
 
 st.write(
-    "Create multilingual AI-powered videos "
-    "from your ideas."
+    "Turn your text into multilingual AI video scripts."
 )
 
 st.divider()
 
 
 # =========================================================
-# VIDEO IDEA
+# INPUT
 # =========================================================
 
 st.subheader(
-    "✍️ Create Your Video"
+    "✍️ Video Idea"
 )
 
-text = st.text_area(
-    "Enter your video idea",
+idea = st.text_area(
+    "What video do you want to create?",
     height=180,
     placeholder=(
         "Example: A student who fails many times "
-        "but finally achieves his dream through "
-        "hard work."
+        "but finally succeeds through hard work."
     )
 )
 
 
 # =========================================================
-# VIDEO SETTINGS
+# SETTINGS
 # =========================================================
 
 col1, col2 = st.columns(2)
@@ -731,7 +619,7 @@ with col3:
 
 with col4:
 
-    aspect_ratio = st.selectbox(
+    ratio = st.selectbox(
         "📱 Format",
         [
             "9:16 Portrait",
@@ -742,7 +630,7 @@ with col4:
 
 
 style = st.selectbox(
-    "🎨 Video Style",
+    "🎨 Style",
     [
         "Cinematic",
         "Realistic",
@@ -757,7 +645,7 @@ style = st.selectbox(
 
 
 music = st.selectbox(
-    "🎵 Background Music",
+    "🎵 Music",
     [
         "None",
         "Cinematic",
@@ -770,93 +658,78 @@ music = st.selectbox(
 
 
 # =========================================================
-# SAFETY NOTICE
+# SAFETY
 # =========================================================
 
 st.info(
     "🛡️ Adult, pornographic, sexually explicit "
-    "and NSFW video generation is not supported."
+    "and NSFW videos are not supported."
 )
 
 
 # =========================================================
-# GENERATE SCRIPT
+# GENERATE
 # =========================================================
-
-st.divider()
 
 if st.button(
     "🚀 Generate AI Script",
-    use_container_width=True,
-    type="primary"
+    type="primary",
+    use_container_width=True
 ):
 
-    if not text.strip():
+    if not idea.strip():
 
         st.warning(
-            "Please enter a video idea first."
+            "Please enter a video idea."
         )
 
-    elif is_unsafe_content(text):
+    elif is_unsafe_content(idea):
 
         st.error(
             "🚫 This type of content is not supported "
             "by Nexa Video AI."
         )
 
-    elif not GEMINI_API_KEY:
+    elif st.session_state.videos_today >= 2:
 
         st.error(
-            "Gemini API key is missing."
+            "⛔ Daily limit reached. "
+            "Premium users can generate up to "
+            "2 videos per day."
         )
 
     else:
 
         prompt = f"""
-You are the safe AI scriptwriter for Nexa Video AI.
+You are Nexa Video AI, a safe multilingual
+AI video script generator.
 
-SAFETY RULES:
+Create a detailed {duration} video script.
 
-Do not create:
-- pornography
-- adult videos
-- sexually explicit content
-- erotic sexual content
-- NSFW content
-- sexualized nudity
-- sexual content involving minors
+Topic:
+{idea}
 
-The video must be suitable for a general audience.
-
-USER IDEA:
-{text}
-
-LANGUAGE:
+Language:
 {language}
 
-TARGET DURATION:
-{duration}
-
-VOICE:
+Voice:
 {voice}
 
-VIDEO STYLE:
+Visual style:
 {style}
 
-VIDEO FORMAT:
-{aspect_ratio}
+Aspect ratio:
+{ratio}
 
-BACKGROUND MUSIC:
+Music:
 {music}
 
-Create a detailed production-ready video script.
+Create 8 to 12 scenes.
 
-Divide the video into scenes.
-
-For every scene provide:
+For each scene provide:
 
 1. Scene number
-2. Scene duration
+2. Duration
 3. Visual description
 4. AI visual prompt
 5. Narration
@@ -864,22 +737,28 @@ For every scene provide:
 7. Camera movement
 8. Music suggestion
 
-Make the narration natural in the selected language.
+Make the story engaging and natural.
 
-The final script should be suitable for converting into
-a 5-minute or longer AI video.
+The video must be suitable for a general audience.
 
-Do not include adult or sexually explicit content.
+Do not generate:
+- pornography
+- adult content
+- sexual content
+- erotic content
+- NSFW content
+- sexualized nudity
+- sexual content involving minors
+
+Create the narration in the selected language.
 """
 
         with st.spinner(
-            "🧠 Gemini is creating your script..."
+            "🧠 Creating your AI script..."
         ):
 
-            generated_text, error = (
-                generate_gemini_script(
-                    prompt
-                )
+            script, error = generate_script(
+                prompt
             )
 
         if error:
@@ -888,36 +767,32 @@ Do not include adult or sexually explicit content.
                 f"❌ {error}"
             )
 
-        elif not generated_text:
+        elif not script:
 
             st.error(
-                "Gemini returned an empty response."
+                "No script was returned."
             )
 
-        elif is_unsafe_content(
-            generated_text
-        ):
+        elif is_unsafe_content(script):
 
             st.error(
                 "🚫 Generated content failed "
-                "the Nexa safety check."
+                "the safety check."
             )
-
-            st.session_state.generated_script = ""
 
         else:
 
-            st.session_state.generated_script = (
-                generated_text
-            )
+            st.session_state.generated_script = script
+
+            st.session_state.videos_today += 1
 
             st.success(
-                "✅ AI script generated successfully!"
+                "✅ Script generated successfully!"
             )
 
 
 # =========================================================
-# SCRIPT RESULT
+# RESULT
 # =========================================================
 
 if st.session_state.generated_script:
@@ -925,18 +800,18 @@ if st.session_state.generated_script:
     st.divider()
 
     st.subheader(
-        "📝 Generated AI Script"
+        "📝 Generated Script"
     )
 
     st.text_area(
-        "Script",
+        "AI Script",
         st.session_state.generated_script,
-        height=500
+        height=550
     )
 
     st.download_button(
         "⬇️ Download Script",
-        data=st.session_state.generated_script,
+        st.session_state.generated_script,
         file_name="nexa_video_script.txt",
         mime="text/plain",
         use_container_width=True
@@ -949,13 +824,9 @@ if st.session_state.generated_script:
     )
 
     st.info(
-        "The script is ready. In the next stage we will "
-        "connect the actual video-generation engine."
-    )
-
-    st.button(
-        "🎬 Generate Video",
-        use_container_width=True
+        "Your script is ready. "
+        "The actual MP4 generation engine will be "
+        "connected in the next stage."
     )
 
 
@@ -969,27 +840,33 @@ st.subheader(
     "💎 Nexa Premium"
 )
 
-col_a, col_b = st.columns(2)
+left, right = st.columns(2)
 
-with col_a:
+with left:
 
     st.markdown(
         """
-### 💎 ₹10 / month
+### ₹10 / month
 
-- 🎬 Up to 2 videos per day
-- ⏱️ Minimum 5-minute videos
-- 🌐 Multiple languages
-- 🎙️ AI narration
-- 🎨 AI visuals
-- 📝 Automatic subtitles
-- 🎵 Background music
-- ⬇️ Video download
-- 🛡️ Safe content generation
-        """
+🎬 2 videos per day
+
+⏱️ 5+ minute videos
+
+🌐 Multiple languages
+
+🎙️ AI voice
+
+🎨 AI visuals
+
+📝 Subtitles
+
+🎵 Background music
+
+⬇️ Download
+"""
     )
 
-with col_b:
+with right:
 
     st.info(
         "Google Play Billing will be connected "
@@ -1003,13 +880,13 @@ with col_b:
 
 
 # =========================================================
-# CONTENT POLICY
+# POLICY
 # =========================================================
 
 st.divider()
 
 st.subheader(
-    "🛡️ Nexa Safety Policy"
+    "🛡️ Content Policy"
 )
 
 st.write(
@@ -1019,9 +896,8 @@ Nexa Video AI is designed for general-audience content.
 Adult, pornographic, sexually explicit, erotic,
 and NSFW video generation is not supported.
 
-Educational, motivational, storytelling, technology,
-travel, history, entertainment and other safe topics
-are supported.
+Educational, motivational, technology, travel,
+history, storytelling and other safe topics are supported.
 """
 )
 
@@ -1034,8 +910,4 @@ st.divider()
 
 st.caption(
     "🎬 Nexa Video AI • Turn Words Into Videos"
-)
-
-st.caption(
-    "🔐 Secure • 🌐 Multilingual • 🛡️ Safe AI"
-)
+    )
