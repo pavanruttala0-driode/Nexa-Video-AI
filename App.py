@@ -310,12 +310,71 @@ def parse_scenes(script):
 # CREATE IMAGE
 # =========================================================
 
-def create_scene_image(
-    text,
-    number,
-    width=720,
-    height=1280
-):
+
+
+def create_scene_image(text, number, width=720, height=1280):
+    """
+    Creates a visual image for each video scene.
+    Uses a free image-generation endpoint and falls back
+    to a text scene if the image cannot be downloaded.
+    """
+
+    import urllib.parse
+    import requests
+
+    # Extract the visual description from Gemini scene
+    visual = text
+
+    if "Visual:" in text:
+        visual = text.split("Visual:", 1)[1]
+
+        if "Narration:" in visual:
+            visual = visual.split("Narration:", 1)[0]
+
+    visual = visual.strip()
+
+    if not visual:
+        visual = "cinematic realistic scene related to the video topic"
+
+    prompt = (
+        f"cinematic realistic video frame, "
+        f"high quality, natural lighting, "
+        f"professional filmmaking, "
+        f"vertical 9:16 composition, "
+        f"{visual}"
+    )
+
+    encoded_prompt = urllib.parse.quote(prompt)
+
+    image_url = (
+        "https://image.pollinations.ai/prompt/"
+        + encoded_prompt
+        + "?width=720&height=1280&nologo=true"
+    )
+
+    path = os.path.join(
+        tempfile.gettempdir(),
+        f"nexa_scene_{number}.jpg"
+    )
+
+    try:
+        response = requests.get(
+            image_url,
+            timeout=60
+        )
+
+        if response.status_code == 200:
+            with open(path, "wb") as file:
+                file.write(response.content)
+
+            return path
+
+    except Exception:
+        pass
+
+    # -----------------------------------------------------
+    # FALLBACK IMAGE
+    # -----------------------------------------------------
 
     image = Image.new(
         "RGB",
@@ -323,92 +382,56 @@ def create_scene_image(
         "black"
     )
 
-    draw = ImageDraw.Draw(
-        image
-    )
+    draw = ImageDraw.Draw(image)
 
     try:
-
         font = ImageFont.truetype(
             "DejaVuSans.ttf",
-            38
+            36
         )
-
-        small_font = ImageFont.truetype(
-            "DejaVuSans.ttf",
-            28
-        )
-
     except:
-
         font = ImageFont.load_default()
-        small_font = font
-
-    title = f"SCENE {number}"
 
     draw.text(
         (40, 50),
-        title,
+        f"SCENE {number}",
         fill="white",
         font=font
     )
 
-    # Wrap text
-
     words = text.split()
-
     lines = []
     current = ""
 
     for word in words:
+        test = (current + " " + word).strip()
 
-        test = (
-            current + " " + word
-        ).strip()
-
-        if len(test) > 32:
-
-            lines.append(
-                current
-            )
-
+        if len(test) > 30:
+            lines.append(current)
             current = word
-
         else:
-
             current = test
 
     if current:
-        lines.append(
-            current
-        )
+        lines.append(current)
 
     y = 180
 
     for line in lines:
-
         draw.text(
             (40, y),
             line,
             fill="white",
-            font=small_font
+            font=font
         )
-
-        y += 50
+        y += 55
 
         if y > height - 100:
             break
 
-    path = os.path.join(
-        tempfile.gettempdir(),
-        f"nexa_scene_{number}.png"
-    )
-
     image.save(path)
 
     return path
-
-
 # =========================================================
 # TEXT TO SPEECH
 # =========================================================
