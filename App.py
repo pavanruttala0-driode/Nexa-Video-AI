@@ -481,7 +481,7 @@ def create_video(
         )
 
     # Limit first prototype
-    scenes = scenes[:10]
+    scenes = scenes[:1]
 
     clips = []
 
